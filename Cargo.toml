@@ -1,0 +1,9 @@
+[package]
+name = "rsdsl_rtd"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rsdsl_netlinklib = { git = "https://github.com/rsdsl/netlinklib.git", version = "0.6.0", features = ["blocking"] }
