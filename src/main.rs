@@ -3,6 +3,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
+use rsdsl_netlinklib::blocking::Connection;
 use rsdsl_netlinklib::rule::RuleAction;
 
 const ROUTES_PATH: &str = "/data/static.rt";
@@ -155,11 +156,35 @@ impl From<std::num::ParseIntError> for RuleParseError {
 impl std::error::Error for RuleParseError {}
 
 #[derive(Debug)]
+enum SetupError {
+    Netlinklib(rsdsl_netlinklib::Error),
+}
+
+impl fmt::Display for SetupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Netlinklib(e) => write!(f, "rsdsl_netlinklib: {}", e)?,
+        }
+
+        Ok(())
+    }
+}
+
+impl From<rsdsl_netlinklib::Error> for SetupError {
+    fn from(e: rsdsl_netlinklib::Error) -> SetupError {
+        SetupError::Netlinklib(e)
+    }
+}
+
+impl std::error::Error for SetupError {}
+
+#[derive(Debug)]
 enum Error {
     ParseRoutes(RouteParseError),
     ParseRules(RuleParseError),
     ReadRoutes(std::io::Error),
     ReadRules(std::io::Error),
+    Setup(SetupError),
 }
 
 impl fmt::Display for Error {
@@ -169,6 +194,7 @@ impl fmt::Display for Error {
             Self::ParseRules(e) => write!(f, "parse rules: {}", e)?,
             Self::ReadRoutes(e) => write!(f, "read routes ({}): {}", ROUTES_PATH, e)?,
             Self::ReadRules(e) => write!(f, "read rules ({}): {}", RULES_PATH, e)?,
+            Self::Setup(e) => write!(f, "set up route/rule: {}", e)?,
         }
 
         Ok(())
@@ -187,6 +213,12 @@ impl From<RuleParseError> for Error {
     }
 }
 
+impl From<SetupError> for Error {
+    fn from(e: SetupError) -> Error {
+        Error::Setup(e)
+    }
+}
+
 impl std::error::Error for Error {}
 
 #[derive(Debug)]
@@ -195,16 +227,83 @@ enum RouteVersion {
     Ipv6,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum RouteDef {
     V4(rsdsl_netlinklib::route::Route4),
     V6(rsdsl_netlinklib::route::Route6),
 }
 
-#[derive(Debug)]
+impl RouteDef {
+    fn add(self, c: &Connection) -> Result<(), SetupError> {
+        match self {
+            Self::V4(r) => c.route_add4(r)?,
+            Self::V6(r) => c.route_add6(r)?,
+        }
+
+        Ok(())
+    }
+
+    fn delete(self, c: &Connection) -> Result<(), SetupError> {
+        match self {
+            Self::V4(r) => c.route_del4(r)?,
+            Self::V6(r) => c.route_del6(r)?,
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for RouteDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::V4(r) => {
+                write!(f, "route4 {}/{}", r.dst, r.prefix_len)?;
+                if let Some(rtr) = r.rtr {
+                    write!(f, " via {}", rtr)?;
+                }
+                if r.on_link {
+                    write!(f, " onlink")?;
+                }
+                if let Some(table) = r.table {
+                    write!(f, " table {}", table)?;
+                }
+                if let Some(metric) = r.metric {
+                    write!(f, " metric {}", metric)?;
+                }
+                write!(f, " dev {}", r.link)?;
+            }
+            Self::V6(r) => {
+                write!(f, "route6 {}/{}", r.dst, r.prefix_len)?;
+                if let Some(rtr) = r.rtr {
+                    write!(f, " via {}", rtr)?;
+                }
+                if r.on_link {
+                    write!(f, " onlink")?;
+                }
+                if let Some(table) = r.table {
+                    write!(f, " table {}", table)?;
+                }
+                if let Some(metric) = r.metric {
+                    write!(f, " metric {}", metric)?;
+                }
+                write!(f, " dev {}", r.link)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
 struct Route {
     delete: bool,
     def: RouteDef,
+}
+
+impl fmt::Display for Route {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.def.fmt(f)
+    }
 }
 
 impl FromStr for Route {
@@ -343,7 +442,7 @@ impl FromStr for Routes {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 enum RuleVersion {
     #[default]
     Both,
@@ -351,7 +450,7 @@ enum RuleVersion {
     Ipv6,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Rule {
     delete: bool,
     version: RuleVersion,
@@ -361,6 +460,162 @@ struct Rule {
     src: Option<(IpAddr, u8)>,
     action: RuleAction,
     table: u32,
+}
+
+impl Rule {
+    fn add(self, c: &Connection) -> Result<(), SetupError> {
+        match self.version {
+            RuleVersion::Both => rsdsl_netlinklib::rule::Rule::<()> {
+                invert: self.invert,
+                fwmark: self.fwmark,
+                dst: None,
+                src: None,
+                action: self.action,
+                table: self.table,
+            }
+            .blocking_add(c)?,
+            RuleVersion::Ipv4 => rsdsl_netlinklib::rule::Rule::<Ipv4Addr> {
+                invert: self.invert,
+                fwmark: self.fwmark,
+                dst: self.dst.map(|dst| {
+                    if let (IpAddr::V4(addr), cidr) = dst {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                src: self.src.map(|src| {
+                    if let (IpAddr::V4(addr), cidr) = src {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                action: self.action,
+                table: self.table,
+            }
+            .blocking_add(c)?,
+            RuleVersion::Ipv6 => rsdsl_netlinklib::rule::Rule::<Ipv6Addr> {
+                invert: self.invert,
+                fwmark: self.fwmark,
+                dst: self.dst.map(|dst| {
+                    if let (IpAddr::V6(addr), cidr) = dst {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                src: self.src.map(|src| {
+                    if let (IpAddr::V6(addr), cidr) = src {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                action: self.action,
+                table: self.table,
+            }
+            .blocking_add(c)?,
+        };
+
+        Ok(())
+    }
+
+    fn delete(self, c: &Connection) -> Result<(), SetupError> {
+        match self.version {
+            RuleVersion::Both => rsdsl_netlinklib::rule::Rule::<()> {
+                invert: self.invert,
+                fwmark: self.fwmark,
+                dst: None,
+                src: None,
+                action: self.action,
+                table: self.table,
+            }
+            .blocking_del(c)?,
+            RuleVersion::Ipv4 => rsdsl_netlinklib::rule::Rule::<Ipv4Addr> {
+                invert: self.invert,
+                fwmark: self.fwmark,
+                dst: self.dst.map(|dst| {
+                    if let (IpAddr::V4(addr), cidr) = dst {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                src: self.src.map(|src| {
+                    if let (IpAddr::V4(addr), cidr) = src {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                action: self.action,
+                table: self.table,
+            }
+            .blocking_del(c)?,
+            RuleVersion::Ipv6 => rsdsl_netlinklib::rule::Rule::<Ipv6Addr> {
+                invert: self.invert,
+                fwmark: self.fwmark,
+                dst: self.dst.map(|dst| {
+                    if let (IpAddr::V6(addr), cidr) = dst {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                src: self.src.map(|src| {
+                    if let (IpAddr::V6(addr), cidr) = src {
+                        (addr, cidr)
+                    } else {
+                        unreachable!()
+                    }
+                }),
+                action: self.action,
+                table: self.table,
+            }
+            .blocking_del(c)?,
+        };
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for Rule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.version {
+            RuleVersion::Both => write!(f, "rule")?,
+            RuleVersion::Ipv4 => write!(f, "rule4")?,
+            RuleVersion::Ipv6 => write!(f, "rule6")?,
+        }
+        if self.invert {
+            write!(f, " invert true")?;
+        }
+        if let Some(fwmark) = self.fwmark {
+            write!(f, " fwmark {}", fwmark)?;
+        }
+        if let Some(dst) = self.dst {
+            write!(f, " dst {}/{}", dst.0, dst.1)?;
+        }
+        if let Some(src) = self.src {
+            write!(f, " src {}/{}", src.0, src.1)?;
+        }
+        match self.action {
+            RuleAction::Unspec => write!(f, " action unspec")?,
+            RuleAction::ToTable => write!(f, " action to_table")?,
+            RuleAction::Goto => write!(f, " action goto")?,
+            RuleAction::Nop => write!(f, " action nop")?,
+            RuleAction::Blackhole => write!(f, " action blackhole")?,
+            RuleAction::Unreachable => write!(f, " action unreachable")?,
+            RuleAction::Prohibit => write!(f, " action prohibit")?,
+            RuleAction::Other(a) => write!(f, " action {}", a)?,
+            _ => write!(f, " action ?")?,
+        }
+        if self.action == RuleAction::ToTable {
+            write!(f, " table {}", self.table)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl FromStr for Rule {
@@ -557,5 +812,35 @@ fn run() -> Result<(), Error> {
     };
     let rules: Rules = rules.parse()?;
 
-    todo!()
+    let conn = Connection::new().map_err(SetupError::from)?;
+
+    for route in routes.routes {
+        match route.def.clone().delete(&conn) {
+            Ok(_) => println!("[info] del {}", route),
+            Err(e) => println!("[warn] del {}: {}", route, e),
+        }
+
+        if !route.delete {
+            match route.def.clone().add(&conn) {
+                Ok(_) => println!("[info] add {}", route),
+                Err(e) => println!("[warn] add {}: {}", route, e),
+            }
+        }
+    }
+
+    for rule in rules.rules {
+        match rule.clone().delete(&conn) {
+            Ok(_) => println!("[info] del {}", rule),
+            Err(e) => println!("[warn] del {}: {}", rule, e),
+        }
+
+        if !rule.delete {
+            match rule.clone().add(&conn) {
+                Ok(_) => println!("[info] add {}", rule),
+                Err(e) => println!("[warn] add {}: {}", rule, e),
+            }
+        }
+    }
+
+    Ok(())
 }
