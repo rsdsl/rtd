@@ -465,15 +465,26 @@ struct Rule {
 impl Rule {
     fn add(self, c: &Connection) -> Result<(), SetupError> {
         match self.version {
-            RuleVersion::Both => rsdsl_netlinklib::rule::Rule::<()> {
-                invert: self.invert,
-                fwmark: self.fwmark,
-                dst: None,
-                src: None,
-                action: self.action,
-                table: self.table,
+            RuleVersion::Both => {
+                rsdsl_netlinklib::rule::Rule::<Ipv4Addr> {
+                    invert: self.invert,
+                    fwmark: self.fwmark,
+                    dst: None,
+                    src: None,
+                    action: self.action,
+                    table: self.table,
+                }
+                .blocking_add(c)?;
+                rsdsl_netlinklib::rule::Rule::<Ipv6Addr> {
+                    invert: self.invert,
+                    fwmark: self.fwmark,
+                    dst: None,
+                    src: None,
+                    action: self.action,
+                    table: self.table,
+                }
+                .blocking_add(c)?;
             }
-            .blocking_add(c)?,
             RuleVersion::Ipv4 => rsdsl_netlinklib::rule::Rule::<Ipv4Addr> {
                 invert: self.invert,
                 fwmark: self.fwmark,
@@ -523,15 +534,26 @@ impl Rule {
 
     fn delete(self, c: &Connection) -> Result<(), SetupError> {
         match self.version {
-            RuleVersion::Both => rsdsl_netlinklib::rule::Rule::<()> {
-                invert: self.invert,
-                fwmark: self.fwmark,
-                dst: None,
-                src: None,
-                action: self.action,
-                table: self.table,
+            RuleVersion::Both => {
+                rsdsl_netlinklib::rule::Rule::<Ipv4Addr> {
+                    invert: self.invert,
+                    fwmark: self.fwmark,
+                    dst: None,
+                    src: None,
+                    action: self.action,
+                    table: self.table,
+                }
+                .blocking_del(c)?;
+                rsdsl_netlinklib::rule::Rule::<Ipv6Addr> {
+                    invert: self.invert,
+                    fwmark: self.fwmark,
+                    dst: None,
+                    src: None,
+                    action: self.action,
+                    table: self.table,
+                }
+                .blocking_del(c)?;
             }
-            .blocking_del(c)?,
             RuleVersion::Ipv4 => rsdsl_netlinklib::rule::Rule::<Ipv4Addr> {
                 invert: self.invert,
                 fwmark: self.fwmark,
