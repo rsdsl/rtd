@@ -251,6 +251,13 @@ impl RouteDef {
 
         Ok(())
     }
+
+    fn link(&self) -> &str {
+        match self {
+            Self::V4(r) => &r.link,
+            Self::V6(r) => &r.link,
+        }
+    }
 }
 
 impl fmt::Display for RouteDef {
@@ -841,6 +848,10 @@ fn run() -> Result<(), Error> {
             Ok(_) => println!("[info] del {}", route),
             Err(e) => println!("[warn] del {}: {}", route, e),
         }
+
+        println!("[info] wait for link {}", route.def.link());
+        conn.link_wait_exists(route.def.link().to_string())
+            .map_err(SetupError::from)?;
 
         if !route.delete {
             match route.def.clone().add(&conn) {
