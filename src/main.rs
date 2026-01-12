@@ -818,7 +818,7 @@ impl FromStr for Rules {
 }
 
 fn main() {
-    println!("[info] init");
+    eprintln!("[info] init");
 
     match run() {
         Ok(()) => loop {
@@ -845,32 +845,32 @@ fn run() -> Result<(), Error> {
 
     for route in routes.routes {
         match route.def.clone().delete(&conn) {
-            Ok(_) => println!("[info] del {}", route),
-            Err(e) => println!("[warn] del {}: {}", route, e),
+            Ok(_) => eprintln!("[info] del {}", route),
+            Err(e) => eprintln!("[warn] del {}: {}", route, e),
         }
 
-        println!("[info] wait for link {}", route.def.link());
+        eprintln!("[info] wait for link {}", route.def.link());
         conn.link_wait_exists(route.def.link().to_string())
             .map_err(SetupError::from)?;
 
         if !route.delete {
             match route.def.clone().add(&conn) {
-                Ok(_) => println!("[info] add {}", route),
-                Err(e) => println!("[warn] add {}: {}", route, e),
+                Ok(_) => eprintln!("[info] add {}", route),
+                Err(e) => eprintln!("[warn] add {}: {}", route, e),
             }
         }
     }
 
     for rule in rules.rules {
         match rule.clone().delete(&conn) {
-            Ok(_) => println!("[info] del {}", rule),
-            Err(e) => println!("[warn] del {}: {}", rule, e),
+            Ok(_) => eprintln!("[info] del {}", rule),
+            Err(e) => eprintln!("[warn] del {}: {}", rule, e),
         }
 
         if !rule.delete {
             match rule.clone().add(&conn) {
-                Ok(_) => println!("[info] add {}", rule),
-                Err(e) => println!("[warn] add {}: {}", rule, e),
+                Ok(_) => eprintln!("[info] add {}", rule),
+                Err(e) => eprintln!("[warn] add {}: {}", rule, e),
             }
         }
     }
